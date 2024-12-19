@@ -116,8 +116,8 @@ for i, node in enumerate(nodes[1:]):
       BASE_IP, i + 2, params.startKubernetes)))
 
 # Start primary node
-nodes[0].addService(rspec.Execute(shell="bash", command="/local/repository/start.sh primary {}.1 {} {} {} {} {} {} > /home/cloudlab-openwhisk/start.log 2>&1".format(
-  BASE_IP, params.nodeCount, params.startKubernetes, params.deployOpenWhisk, params.numInvokers, params.invokerEngine, params.schedulerEnabled)))
+# nodes[0].addService(rspec.Execute(shell="bash", command="/local/repository/start.sh primary {}.1 {} {} {} {} {} {} > /home/cloudlab-openwhisk/start.log 2>&1".format(
+#   BASE_IP, params.nodeCount, params.startKubernetes, params.deployOpenWhisk, params.numInvokers, params.invokerEngine, params.schedulerEnabled)))
 
 
 pc.printRequestRSpec()
