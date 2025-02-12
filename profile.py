@@ -16,7 +16,7 @@ import geni.rspec.pg as rspec
 
 BASE_IP = "10.10.1"
 BANDWIDTH = 10000000
-IMAGE = 'urn:publicid:IDN+utah.cloudlab.us+image+cu-bison-lab-PG0:openwhiskv3:4'
+IMAGE = 'urn:publicid:IDN+wisc.cloudlab.us+image+gwcloudlab-PG0:openwsk-v1:0'
 
 # Set up parameters
 pc = portal.Context()
@@ -116,8 +116,8 @@ for i, node in enumerate(nodes[1:]):
       BASE_IP, i + 2, params.startKubernetes)))
 
 # Start primary node
-# nodes[0].addService(rspec.Execute(shell="bash", command="/local/repository/start.sh primary {}.1 {} {} {} {} {} {} > /home/cloudlab-openwhisk/start.log 2>&1".format(
-#   BASE_IP, params.nodeCount, params.startKubernetes, params.deployOpenWhisk, params.numInvokers, params.invokerEngine, params.schedulerEnabled)))
+nodes[0].addService(rspec.Execute(shell="bash", command="/local/repository/start.sh primary {}.1 {} {} {} {} {} {} > /home/cloudlab-openwhisk/start.log 2>&1".format(
+  BASE_IP, params.nodeCount, params.startKubernetes, params.deployOpenWhisk, params.numInvokers, params.invokerEngine, params.schedulerEnabled)))
 
 
 pc.printRequestRSpec()
