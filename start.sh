@@ -359,7 +359,7 @@ add_cluster_nodes $3
 
 # Exit early if we don't need to deploy OpenWhisk
 if [ "$5" = "False" ]; then
-    printf "%s: %s\n" "$(date +"%T.%N")" "Deploy Openwhisk is $4, done!"
+    printf "%s: %s\n" "$(date +"%T.%N")" "Deploy Openwhisk is $5, done!"
     exit 0
 fi
 
