@@ -60,7 +60,7 @@ sudo apt update
 sudo apt install -y apt-transport-https gpg
 
 # If the directory `/etc/apt/keyrings` does not exist, it should be created before the curl command, read the note below.
-# sudo mkdir -p -m 755 /etc/apt/keyrings
+sudo mkdir -p -m 755 /etc/apt/keyrings
 sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION_STRING/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
 # This overwrites any existing configuration in /etc/apt/sources.list.d/kubernetes.list
