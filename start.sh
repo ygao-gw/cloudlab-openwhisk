@@ -12,9 +12,14 @@ USAGE=$'Usage:\n\t./start.sh secondary <node_ip> <start_kubernetes>\n\t./start.s
 NUM_PRIMARY_ARGS=8
 PROFILE_GROUP="profileuser"
 
-# Functions
+# Logging helper
+log_info() {
+    echo "$(date +"%T.%N"): $1"
+}
+
+# Configure Docker storage if extra disk is available
 configure_docker_storage() {
-    echo "$(date +"%T.%N"): Configuring docker storage"
+    log_info "Configuring Docker storage..."
     sudo mkdir -p /mydata/docker
     cat <<EOF | sudo tee /etc/docker/daemon.json
 {
@@ -25,50 +30,53 @@ configure_docker_storage() {
     "data-root": "/mydata/docker"
 }
 EOF
-    sudo systemctl restart docker || { echo "ERROR: Docker restart failed, exiting."; exit 1; }
-    sudo docker run hello-world | grep "Hello from Docker!" || { echo "ERROR: Docker run failed, exiting."; exit 1; }
-    echo "$(date +"%T.%N"): Docker storage configured"
+    sudo systemctl restart docker || { log_info "Docker restart failed, exiting."; exit 1; }
+    sudo docker run hello-world | grep "Hello from Docker!" || { log_info "Docker run test failed, exiting."; exit 1; }
+    log_info "Docker storage configured."
 }
 
+# Disable swap and update /etc/fstab accordingly
 disable_swap() {
-    # Turn swap off and comment out swap entries in /etc/fstab
-    sudo swapoff -a || { echo "***Error: Failed to turn off swap"; exit 1; }
-    echo "$(date +"%T.%N"): Swap turned off"
+    log_info "Disabling swap..."
+    sudo swapoff -a || { log_info "Failed to disable swap"; exit 1; }
     sudo sed -i.bak 's/UUID=.*swap/# &/' /etc/fstab
+    log_info "Swap disabled."
 }
 
+# Set up secondary node to join the Kubernetes cluster
 setup_secondary() {
     local node_ip="$1"
-    # Start a netcat listener on the secondary node and wait for the join command
+    log_info "Setting up secondary node at IP: $node_ip"
     coproc nc { nc -l "$node_ip" "$SECONDARY_PORT"; }
     while true; do
-        echo "$(date +"%T.%N"): Waiting for join command (nc pid: $nc_PID)"
+        log_info "Waiting for join command (nc pid: $nc_PID)"
         read -r -u "${nc[0]}" cmd
         case "$cmd" in
             *"kube"*)
                 MY_CMD="sudo ${cmd//\\/}"
-                echo "$(date +"%T.%N"): Command received: $MY_CMD"
+                log_info "Command received: $MY_CMD"
                 break
                 ;;
             *)
-                echo "$(date +"%T.%N"): Read: $cmd"
+                log_info "Received: $cmd"
                 ;;
         esac
         if [ -z "$nc_PID" ]; then
-            echo "$(date +"%T.%N"): Restarting listener via netcat..."
+            log_info "Restarting listener via netcat..."
             coproc nc { nc -l "$node_ip" "$SECONDARY_PORT"; }
         fi
     done
     eval "$MY_CMD"
-    echo "$(date +"%T.%N"): Secondary node joined Kubernetes cluster!"
+    log_info "Secondary node joined Kubernetes cluster!"
 }
 
+# Initialize the primary node for Kubernetes
 setup_primary() {
     local node_ip="$1"
-    echo "$(date +"%T.%N"): Initializing Kubernetes primary node..."
+    log_info "Initializing Kubernetes primary node at IP: $node_ip..."
     sudo kubeadm init --apiserver-advertise-address="$node_ip" --pod-network-cidr=10.11.0.0/16 > "$INSTALL_DIR/k8s_install.log" 2>&1 \
-        || { echo "***Error: kubeadm init failed. See $INSTALL_DIR/k8s_install.log"; exit 1; }
-    echo "$(date +"%T.%N"): kubeadm init complete; log in $INSTALL_DIR/k8s_install.log"
+        || { log_info "kubeadm init failed. See $INSTALL_DIR/k8s_install.log"; exit 1; }
+    log_info "kubeadm init complete; log available at $INSTALL_DIR/k8s_install.log"
     
     # Configure kubectl for all users
     for user_dir in /users/*; do
@@ -76,18 +84,19 @@ setup_primary() {
         sudo mkdir -p "/users/$CURRENT_USER/.kube"
         sudo cp /etc/kubernetes/admin.conf "/users/$CURRENT_USER/.kube/config"
         sudo chown -R "$CURRENT_USER:$PROFILE_GROUP" "/users/$CURRENT_USER/.kube"
-        echo "$(date +"%T.%N"): Configured kubectl for user: $CURRENT_USER"
+        log_info "Configured kubectl for user: $CURRENT_USER"
     done
 }
 
+# Install Calico networking using Helm
 apply_calico() {
-    echo "$(date +"%T.%N"): Adding Calico Helm repo..."
+    log_info "Adding Calico Helm repo and installing Calico..."
     helm repo add projectcalico https://projectcalico.docs.tigera.io/charts > "$INSTALL_DIR/calico_install.log" 2>&1 \
-        || { echo "***Error: Failed to add Calico Helm repo. See $INSTALL_DIR/calico_install.log"; exit 1; }
-    echo "$(date +"%T.%N"): Installing Calico..."
+        || { log_info "Failed to add Calico Helm repo. See $INSTALL_DIR/calico_install.log"; exit 1; }
     helm install calico projectcalico/tigera-operator --version v3.22.0 >> "$INSTALL_DIR/calico_install.log" 2>&1 \
-        || { echo "***Error: Failed to install Calico. See $INSTALL_DIR/calico_install.log"; exit 1; }
-    echo "$(date +"%T.%N"): Waiting for Calico pods to run..."
+        || { log_info "Failed to install Calico. See $INSTALL_DIR/calico_install.log"; exit 1; }
+    
+    log_info "Waiting for Calico pods to be fully running..."
     while true; do
         NUM_PODS=$(kubectl get pods -n calico-system | wc -l)
         NUM_RUNNING=$(kubectl get pods -n calico-system | grep " Running" | wc -l)
@@ -95,9 +104,9 @@ apply_calico() {
         sleep 1
         printf "."
     done
-    echo "$(date +"%T.%N"): Calico pods running!"
+    log_info "Calico pods are running."
     
-    echo "$(date +"%T.%N"): Waiting for kube-system pods to run..."
+    log_info "Waiting for kube-system pods to be fully running..."
     while true; do
         NUM_PODS=$(kubectl get pods -n kube-system | wc -l)
         NUM_RUNNING=$(kubectl get pods -n kube-system | grep " Running" | wc -l)
@@ -105,14 +114,15 @@ apply_calico() {
         sleep 1
         printf "."
     done
-    echo "$(date +"%T.%N"): Kubernetes system pods running!"
+    log_info "Kubernetes system pods are running."
 }
 
+# Add all nodes to the cluster by issuing the join command to secondaries
 add_cluster_nodes() {
     local total_nodes="$1"
     local remote_cmd
     remote_cmd=$(tail -n 2 "$INSTALL_DIR/k8s_install.log")
-    echo "$(date +"%T.%N"): Remote join command: $remote_cmd"
+    log_info "Remote join command: $remote_cmd"
     
     local expected=$((total_nodes))
     local registered
@@ -122,7 +132,7 @@ add_cluster_nodes() {
         if [ "$registered" -ge "$expected" ]; then
             break
         fi
-        echo "$(date +"%T.%N"): Attempt #$counter: $registered/$expected nodes registered"
+        log_info "Attempt #$counter: $registered/$expected nodes registered"
         for (( i=2; i<=total_nodes; i++ )); do
             SECONDARY_IP="$BASE_IP$i"
             echo "$remote_cmd" | nc "$SECONDARY_IP" "$SECONDARY_PORT"
@@ -131,7 +141,7 @@ add_cluster_nodes() {
         sleep 2
     done
 
-    echo "$(date +"%T.%N"): Waiting for all nodes to be Ready..."
+    log_info "Waiting for all nodes to be in the Ready state..."
     while true; do
         local num_ready
         num_ready=$(kubectl get nodes | grep " Ready" | wc -l)
@@ -139,11 +149,11 @@ add_cluster_nodes() {
         sleep 1
         printf "."
     done
-    echo "$(date +"%T.%N"): All nodes are Ready!"
+    log_info "All nodes are Ready!"
 }
 
+# Prepare OpenWhisk deployment configuration
 prepare_for_openwhisk() {
-    # Args: 1 = IP, 2 = num_nodes, 3 = invoker_count, 4 = invoker_engine, 5 = scheduler_enabled
     pushd "$INSTALL_DIR/openwhisk-deploy-kube" > /dev/null
     git pull
     popd > /dev/null
@@ -156,17 +166,17 @@ prepare_for_openwhisk() {
     while IFS= read -r node; do
         local node_name=${node:5}
         if [ "$counter" -lt "$core_nodes" ]; then
-            echo "$(date +"%T.%N"): Skipping labeling non-invoker node $node_name"
+            log_info "Skipping labeling non-invoker node $node_name"
         else
             kubectl label nodes "$node_name" openwhisk-role=invoker \
-                || { echo "***Error: Failed to label node $node_name as invoker"; exit 1; }
-            echo "$(date +"%T.%N"): Labeled node $node_name as openwhisk invoker"
+                || { log_info "Failed to label node $node_name as invoker"; exit 1; }
+            log_info "Labeled node $node_name as OpenWhisk invoker"
         fi
         counter=$((counter + 1))
     done <<< "$NODE_NAMES"
 
-    echo "$(date +"%T.%N"): Creating openwhisk namespace..."
-    kubectl create namespace openwhisk || { echo "***Error: Failed to create openwhisk namespace"; exit 1; }
+    log_info "Creating openwhisk namespace..."
+    kubectl create namespace openwhisk || { log_info "Failed to create openwhisk namespace"; exit 1; }
     
     cp /local/repository/mycluster.yaml "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sed -i.bak "s/REPLACE_ME_WITH_IP/$1/g" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
@@ -175,22 +185,23 @@ prepare_for_openwhisk() {
     sed -i.bak "s/REPLACE_ME_WITH_SCHEDULER_ENABLED/$5/g" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sudo chown "$USER:$PROFILE_GROUP" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sudo chmod g+rw "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
-    echo "$(date +"%T.%N"): Updated mycluster.yaml for OpenWhisk deployment"
+    log_info "Updated mycluster.yaml for OpenWhisk deployment"
     
     if [ "$4" = "docker" ] && [ -d "/mydata" ]; then
         sed -i.bak "s/\/var\/lib\/docker\/containers/\/mydata\/docker\/containers/g" "$INSTALL_DIR/openwhisk-deploy-kube/helm/openwhisk/templates/_invoker-helpers.tpl"
-        echo "$(date +"%T.%N"): Updated dockerrootdir in _invoker-helpers.tpl"
+        log_info "Updated dockerrootdir in _invoker-helpers.tpl"
     fi
 }
 
+# Deploy OpenWhisk using Helm
 deploy_openwhisk() {
     local cluster_ip="$1"
-    echo "$(date +"%T.%N"): Deploying OpenWhisk via Helm..."
+    log_info "Deploying OpenWhisk via Helm..."
     pushd "$INSTALL_DIR/openwhisk-deploy-kube" > /dev/null
     helm install owdev ./helm/openwhisk -n openwhisk -f mycluster.yaml > "$INSTALL_DIR/ow_install.log" 2>&1 \
-        || { echo "***Error: Helm install failed. Check $INSTALL_DIR/ow_install.log"; exit 1; }
+        || { log_info "Helm install failed. Check $INSTALL_DIR/ow_install.log"; exit 1; }
     popd > /dev/null
-    echo "$(date +"%T.%N"): Helm install initiated. Monitoring deployment..."
+    log_info "Helm install initiated. Monitoring deployment..."
 
     while true; do
         local deploy_complete
@@ -198,7 +209,7 @@ deploy_openwhisk() {
         [ "$deploy_complete" -eq 1 ] && break
         sleep 2
     done
-    echo "$(date +"%T.%N"): OpenWhisk deployment complete!"
+    log_info "OpenWhisk deployment complete!"
 
     for user_dir in /users/*; do
         local CURRENT_USER
@@ -212,7 +223,7 @@ EOF
 }
 
 # Main script execution
-echo "$(date +"%T.%N"): Script arguments: $*"
+log_info "Script arguments: $*"
 
 if [ "$#" -lt "$NUM_MIN_ARGS" ]; then
     echo "***Error: Expected at least $NUM_MIN_ARGS arguments."
@@ -229,12 +240,12 @@ fi
 # Disable swap for Kubernetes
 disable_swap
 
-# Configure additional docker storage if mountpoint exists
+# Configure additional Docker storage if /mydata exists
 if [ -d "/mydata" ]; then
     configure_docker_storage
 fi
 
-# Add all users to the docker and profile groups, and fix INSTALL_DIR permissions
+# Add all users to the docker and profile groups, then fix INSTALL_DIR permissions
 sudo groupadd "$PROFILE_GROUP" || true
 for user_dir in /users/*; do
     CURRENT_USER=$(basename "$user_dir")
@@ -244,10 +255,9 @@ done
 sudo chown -R "$USER:$PROFILE_GROUP" "$INSTALL_DIR"
 sudo chmod -R g+rw "$INSTALL_DIR"
 
-# Branch based on primary vs secondary
 if [ "$1" = "$SECONDARY_ARG" ]; then
     if [ "$3" = "False" ]; then
-        echo "$(date +"%T.%N"): Kubernetes start set to False; exiting secondary setup."
+        log_info "Kubernetes start set to False; exiting secondary setup."
         exit 0
     fi
     sudo sed -i.bak "s/REPLACE_ME_WITH_IP/$2/g" /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
@@ -255,7 +265,6 @@ if [ "$1" = "$SECONDARY_ARG" ]; then
     exit 0
 fi
 
-# Primary node branch: check argument count
 if [ "$#" -ne "$NUM_PRIMARY_ARGS" ]; then
     echo "***Error: Expected $NUM_PRIMARY_ARGS arguments for primary mode."
     echo "$USAGE"
@@ -263,7 +272,7 @@ if [ "$#" -ne "$NUM_PRIMARY_ARGS" ]; then
 fi
 
 if [ "$4" = "False" ]; then
-    echo "$(date +"%T.%N"): Kubernetes start set to False; exiting primary setup."
+    log_info "Kubernetes start set to False; exiting primary setup."
     exit 0
 fi
 
@@ -273,11 +282,10 @@ apply_calico
 add_cluster_nodes "$3"
 
 if [ "$5" = "False" ]; then
-    echo "$(date +"%T.%N"): OpenWhisk deployment set to False; exiting."
+    log_info "OpenWhisk deployment set to False; exiting."
     exit 0
 fi
 
 prepare_for_openwhisk "$2" "$3" "$6" "$7" "$8"
 deploy_openwhisk "$2"
-
-echo "$(date +"%T.%N"): Profile setup completed!"
+log_info "Profile setup completed!"

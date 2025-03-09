@@ -1,96 +1,132 @@
 #!/bin/bash
+set -e
 set -x
 
-# Use particular docker and kubernetes versions. When I've tried to upgrade, I've seen slowdowns in 
-# pod creation.
-DOCKER_VERSION_STRING=5:27.4.1-1~ubuntu.20.04~focal
-KUBERNETES_VERSION_STRING=v1.32
+# Logging helper
+log_info() {
+    echo "$(date +"%T.%N"): $1"
+}
 
-# Unlike home directories, this directory will be included in the image
-OW_USER_GROUP=owuser
-INSTALL_DIR=/home/cloudlab-openwhisk
+# Update system packages
+update_system() {
+    log_info "Updating system packages..."
+    sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y
+}
 
-# General updates
-sudo apt update
-sudo apt upgrade -y
-sudo apt autoremove -y
+# Install packages
+install_packages() {
+    sudo apt install -y "$@"
+}
 
-# Openwhisk build dependencies
-sudo apt install -y nodejs npm default-jre default-jdk
+# Install OpenWhisk build dependencies and upgrade pip
+install_openwhisk_dependencies() {
+    log_info "Installing OpenWhisk build dependencies..."
+    install_packages nodejs npm default-jre default-jdk python python3-pip
+    python3 -m pip install --upgrade pip
+}
 
-# In order to use wskdev commands, need to run this: 
-# it will install python3 not 2 as in the original script.
-sudo apt install -y python
+# Install Docker and configure it
+install_docker() {
+    local DOCKER_VERSION_STRING="5:27.4.1-1~ubuntu.20.04~focal"
+    log_info "Installing Docker..."
+    install_packages ca-certificates curl
 
-# Pip is useful
-sudo apt install -y python3-pip
-python3 -m pip install --upgrade pip
+    # Set up Docker's official GPG key and repository
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt update
 
-# Install docker (https://docs.docker.com/engine/install/ubuntu/)
-# Add Docker's official GPG key:
-sudo apt install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
+    # Install Docker packages
+    install_packages docker-ce=$DOCKER_VERSION_STRING docker-ce-cli=$DOCKER_VERSION_STRING containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Add the repository to Apt sources:
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update
-
-sudo apt install -y docker-ce=$DOCKER_VERSION_STRING docker-ce-cli=$DOCKER_VERSION_STRING containerd.io docker-buildx-plugin docker-compose-plugin
-
-# Set to use cgroupdriver
-echo -e '{
+    # Configure Docker daemon
+    cat <<EOF | sudo tee /etc/docker/daemon.json
+{
   "exec-opts": ["native.cgroupdriver=systemd"],
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "100m"
   },
   "storage-driver": "overlay2"
-}' | sudo tee /etc/docker/daemon.json
-sudo systemctl restart docker || (echo "ERROR: Docker installation failed, exiting." && exit -1)
-sudo docker run hello-world | grep "Hello from Docker!" || (echo "ERROR: Docker installation failed, exiting." && exit -1)
+}
+EOF
+    sudo systemctl restart docker || { log_info "Docker restart failed, exiting."; exit 1; }
+    sudo docker run hello-world | grep "Hello from Docker!" || { log_info "Docker run test failed, exiting."; exit 1; }
+    log_info "Docker installed successfully."
+}
 
-# Install Kubernetes
-sudo apt update
-# apt-transport-https may be a dummy package; if so, you can skip that package
-sudo apt install -y apt-transport-https gpg
+# Install Kubernetes components
+install_kubernetes() {
+    local KUBERNETES_VERSION_STRING="v1.32"
+    log_info "Installing Kubernetes components..."
+    sudo apt update
+    install_packages apt-transport-https gpg
+    sudo mkdir -p -m 755 /etc/apt/keyrings
+    sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION_STRING/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION_STRING/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo apt update
+    install_packages kubelet kubeadm kubectl
+    sudo apt-mark hold kubelet kubeadm kubectl
 
-# If the directory `/etc/apt/keyrings` does not exist, it should be created before the curl command, read the note below.
-sudo mkdir -p -m 755 /etc/apt/keyrings
-sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION_STRING/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    # Modify kubelet config to include a placeholder for private IP
+    sudo sed -i.bak "s|KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml|KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml --node-ip=REPLACE_ME_WITH_IP|g" /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    log_info "Kubernetes installed successfully."
+}
 
-# This overwrites any existing configuration in /etc/apt/sources.list.d/kubernetes.list
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION_STRING/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+# Install the OpenWhisk CLI
+install_openwhisk_cli() {
+    log_info "Installing OpenWhisk CLI..."
+    wget https://github.com/apache/openwhisk-cli/releases/download/latest/OpenWhisk_CLI-latest-linux-386.tgz
+    tar -xvf OpenWhisk_CLI-latest-linux-386.tgz
+    sudo mv wsk /usr/local/bin/wsk
+    rm OpenWhisk_CLI-latest-linux-386.tgz
+    log_info "OpenWhisk CLI installed."
+}
 
-sudo apt update
-sudo apt install -y kubelet kubeadm kubectl
-sudo apt-mark hold kubelet kubeadm kubectl
+# Install Helm
+install_helm() {
+    log_info "Installing Helm..."
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    sudo ./get_helm.sh
+    rm get_helm.sh
+    log_info "Helm installed."
+}
 
-# Set to use private IP
-sudo sed -i.bak "s/KUBELET_CONFIG_ARGS=--config=\/var\/lib\/kubelet\/config\.yaml/KUBELET_CONFIG_ARGS=--config=\/var\/lib\/kubelet\/config\.yaml --node-ip=REPLACE_ME_WITH_IP/g" /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+# Set up permissions and clone the OpenWhisk deployment repo
+setup_permissions_and_repo() {
+    local OW_USER_GROUP="owuser"
+    local INSTALL_DIR="/home/cloudlab-openwhisk"
+    log_info "Setting up user group and install directory..."
+    sudo groupadd -f "$OW_USER_GROUP"
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo chgrp -R "$OW_USER_GROUP" "$INSTALL_DIR"
+    sudo chmod -R o+rw "$INSTALL_DIR"
 
-# Download and install the OpenWhisk CLI
-wget https://github.com/apache/openwhisk-cli/releases/download/latest/OpenWhisk_CLI-latest-linux-386.tgz
-tar -xvf OpenWhisk_CLI-latest-linux-386.tgz
-sudo mv wsk /usr/local/bin/wsk
+    log_info "Cloning openwhisk-deploy-kube repository..."
+    if [ ! -d "$INSTALL_DIR/openwhisk-deploy-kube" ]; then
+        git clone https://github.com/apache/openwhisk-deploy-kube "$INSTALL_DIR/openwhisk-deploy-kube"
+    else
+        log_info "Repository already exists. Pulling latest changes..."
+        (cd "$INSTALL_DIR/openwhisk-deploy-kube" && git pull)
+    fi
+    sudo chgrp -R "$OW_USER_GROUP" "$INSTALL_DIR"
+    sudo chmod -R o+rw "$INSTALL_DIR"
+}
 
-# Download and install helm
-curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-chmod 700 get_helm.sh
-sudo ./get_helm.sh
+# Main execution flow
+main() {
+    update_system
+    install_openwhisk_dependencies
+    install_docker
+    install_kubernetes
+    install_openwhisk_cli
+    install_helm
+    setup_permissions_and_repo
+    log_info "Base image installation completed successfully."
+}
 
-# Create $OW_USER_GROUP group so $INSTALL_DIR can be accessible to everyone
-sudo groupadd $OW_USER_GROUP
-sudo mkdir $INSTALL_DIR
-sudo chgrp -R $OW_USER_GROUP $INSTALL_DIR
-sudo chmod -R o+rw $INSTALL_DIR
-
-# Download openwhisk-deploy-kube repo
-git clone https://github.com/apache/openwhisk-deploy-kube $INSTALL_DIR/openwhisk-deploy-kube
-sudo chgrp -R $OW_USER_GROUP $INSTALL_DIR
-sudo chmod -R o+rw $INSTALL_DIR
-
+main
