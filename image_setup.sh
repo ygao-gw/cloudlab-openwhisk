@@ -21,7 +21,7 @@ install_packages() {
 # Install OpenWhisk build dependencies and upgrade pip
 install_openwhisk_dependencies() {
     log_info "Installing OpenWhisk build dependencies..."
-    install_packages nodejs npm default-jre default-jdk python python3-pip
+    install_packages nodejs npm default-jre default-jdk python3-pip
     python3 -m pip install --upgrade pip
 }
 
@@ -70,9 +70,6 @@ install_kubernetes() {
     sudo apt update
     install_packages kubelet kubeadm kubectl
     sudo apt-mark hold kubelet kubeadm kubectl
-
-    # Modify kubelet config to include a placeholder for private IP
-    sudo sed -i.bak "s|KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml|KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml --node-ip=REPLACE_ME_WITH_IP|g" /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
     log_info "Kubernetes installed successfully."
 }
 

@@ -30,15 +30,24 @@ configure_docker_storage() {
     "data-root": "/mydata/docker"
 }
 EOF
-    sudo systemctl restart docker || { log_info "Docker restart failed, exiting."; exit 1; }
-    sudo docker run hello-world | grep "Hello from Docker!" || { log_info "Docker run test failed, exiting."; exit 1; }
+    sudo systemctl restart docker || {
+        log_info "Docker restart failed, exiting."
+        exit 1
+    }
+    sudo docker run hello-world | grep "Hello from Docker!" || {
+        log_info "Docker run test failed, exiting."
+        exit 1
+    }
     log_info "Docker storage configured."
 }
 
 # Disable swap and update /etc/fstab accordingly
 disable_swap() {
     log_info "Disabling swap..."
-    sudo swapoff -a || { log_info "Failed to disable swap"; exit 1; }
+    sudo swapoff -a || {
+        log_info "Failed to disable swap"
+        exit 1
+    }
     sudo sed -i.bak 's/UUID=.*swap/# &/' /etc/fstab
     log_info "Swap disabled."
 }
@@ -52,14 +61,14 @@ setup_secondary() {
         log_info "Waiting for join command (nc pid: $nc_PID)"
         read -r -u "${nc[0]}" cmd
         case "$cmd" in
-            *"kube"*)
-                MY_CMD="sudo ${cmd//\\/}"
-                log_info "Command received: $MY_CMD"
-                break
-                ;;
-            *)
-                log_info "Received: $cmd"
-                ;;
+        *"kube"*)
+            MY_CMD="sudo ${cmd//\\/}"
+            log_info "Command received: $MY_CMD"
+            break
+            ;;
+        *)
+            log_info "Received: $cmd"
+            ;;
         esac
         if [ -z "$nc_PID" ]; then
             log_info "Restarting listener via netcat..."
@@ -74,10 +83,13 @@ setup_secondary() {
 setup_primary() {
     local node_ip="$1"
     log_info "Initializing Kubernetes primary node at IP: $node_ip..."
-    sudo kubeadm init --apiserver-advertise-address="$node_ip" --pod-network-cidr=10.11.0.0/16 > "$INSTALL_DIR/k8s_install.log" 2>&1 \
-        || { log_info "kubeadm init failed. See $INSTALL_DIR/k8s_install.log"; exit 1; }
+    sudo kubeadm init --apiserver-advertise-address="$node_ip" --pod-network-cidr=10.11.0.0/16 >"$INSTALL_DIR/k8s_install.log" 2>&1 ||
+        {
+            log_info "kubeadm init failed. See $INSTALL_DIR/k8s_install.log"
+            exit 1
+        }
     log_info "kubeadm init complete; log available at $INSTALL_DIR/k8s_install.log"
-    
+
     # Configure kubectl for all users
     for user_dir in /users/*; do
         CURRENT_USER=$(basename "$user_dir")
@@ -91,11 +103,17 @@ setup_primary() {
 # Install Calico networking using Helm
 apply_calico() {
     log_info "Adding Calico Helm repo and installing Calico..."
-    helm repo add projectcalico https://projectcalico.docs.tigera.io/charts > "$INSTALL_DIR/calico_install.log" 2>&1 \
-        || { log_info "Failed to add Calico Helm repo. See $INSTALL_DIR/calico_install.log"; exit 1; }
-    helm install calico projectcalico/tigera-operator --version v3.22.0 >> "$INSTALL_DIR/calico_install.log" 2>&1 \
-        || { log_info "Failed to install Calico. See $INSTALL_DIR/calico_install.log"; exit 1; }
-    
+    helm repo add projectcalico https://docs.tigera.io/calico/charts >"$INSTALL_DIR/calico_install.log" 2>&1 ||
+        {
+            log_info "Failed to add Calico Helm repo. See $INSTALL_DIR/calico_install.log"
+            exit 1
+        }
+    vhelm install calico projectcalico/tigera-operator --version v3.29.2 >>"$INSTALL_DIR/calico_install.log" 2>&1 ||
+        {
+            log_info "Failed to install Calico. See $INSTALL_DIR/calico_install.log"
+            exit 1
+        }
+
     log_info "Waiting for Calico pods to be fully running..."
     while true; do
         NUM_PODS=$(kubectl get pods -n calico-system | wc -l)
@@ -105,7 +123,7 @@ apply_calico() {
         printf "."
     done
     log_info "Calico pods are running."
-    
+
     log_info "Waiting for kube-system pods to be fully running..."
     while true; do
         NUM_PODS=$(kubectl get pods -n kube-system | wc -l)
@@ -123,7 +141,7 @@ add_cluster_nodes() {
     local remote_cmd
     remote_cmd=$(tail -n 2 "$INSTALL_DIR/k8s_install.log")
     log_info "Remote join command: $remote_cmd"
-    
+
     local expected=$((total_nodes))
     local registered
     local counter=0
@@ -133,7 +151,7 @@ add_cluster_nodes() {
             break
         fi
         log_info "Attempt #$counter: $registered/$expected nodes registered"
-        for (( i=2; i<=total_nodes; i++ )); do
+        for ((i = 2; i <= total_nodes; i++)); do
             SECONDARY_IP="$BASE_IP$i"
             echo "$remote_cmd" | nc "$SECONDARY_IP" "$SECONDARY_PORT"
         done
@@ -154,13 +172,13 @@ add_cluster_nodes() {
 
 # Prepare OpenWhisk deployment configuration
 prepare_for_openwhisk() {
-    pushd "$INSTALL_DIR/openwhisk-deploy-kube" > /dev/null
+    pushd "$INSTALL_DIR/openwhisk-deploy-kube" >/dev/null
     git pull
-    popd > /dev/null
+    popd >/dev/null
 
     local NODE_NAMES
     NODE_NAMES=$(kubectl get nodes -o name)
-    local core_nodes=$(( $2 - $3 ))
+    local core_nodes=$(($2 - $3))
     local counter=0
 
     while IFS= read -r node; do
@@ -168,16 +186,22 @@ prepare_for_openwhisk() {
         if [ "$counter" -lt "$core_nodes" ]; then
             log_info "Skipping labeling non-invoker node $node_name"
         else
-            kubectl label nodes "$node_name" openwhisk-role=invoker \
-                || { log_info "Failed to label node $node_name as invoker"; exit 1; }
+            kubectl label nodes "$node_name" openwhisk-role=invoker ||
+                {
+                    log_info "Failed to label node $node_name as invoker"
+                    exit 1
+                }
             log_info "Labeled node $node_name as OpenWhisk invoker"
         fi
         counter=$((counter + 1))
-    done <<< "$NODE_NAMES"
+    done <<<"$NODE_NAMES"
 
     log_info "Creating openwhisk namespace..."
-    kubectl create namespace openwhisk || { log_info "Failed to create openwhisk namespace"; exit 1; }
-    
+    kubectl create namespace openwhisk || {
+        log_info "Failed to create openwhisk namespace"
+        exit 1
+    }
+
     cp /local/repository/mycluster.yaml "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sed -i.bak "s/REPLACE_ME_WITH_IP/$1/g" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sed -i.bak "s/REPLACE_ME_WITH_INVOKER_ENGINE/$4/g" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
@@ -186,21 +210,44 @@ prepare_for_openwhisk() {
     sudo chown "$USER:$PROFILE_GROUP" "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     sudo chmod g+rw "$INSTALL_DIR/openwhisk-deploy-kube/mycluster.yaml"
     log_info "Updated mycluster.yaml for OpenWhisk deployment"
-    
+
     if [ "$4" = "docker" ] && [ -d "/mydata" ]; then
         sed -i.bak "s/\/var\/lib\/docker\/containers/\/mydata\/docker\/containers/g" "$INSTALL_DIR/openwhisk-deploy-kube/helm/openwhisk/templates/_invoker-helpers.tpl"
         log_info "Updated dockerrootdir in _invoker-helpers.tpl"
     fi
 }
 
-# Deploy OpenWhisk using Helm
+# Generate a new admin auth token in the format <UUID>:<secret>
+generate_auth_token() {
+    local uuid secret new_auth
+    uuid=$(uuidgen)
+    secret=$(openssl rand -hex 16)
+    new_auth="${uuid}:${secret}"
+    echo "$new_auth"
+}
+
+# Update the OpenWhisk controller secret with the new auth token.
+# Adjust 'owadmin' if your secret name is different.
+update_controller_auth() {
+    local new_auth="$1"
+    kubectl -n openwhisk patch secret owadmin --patch "{\"data\":{\"auth\":\"$(echo -n "$new_auth" | base64)\"}}" || {
+        log_info "Failed to update OpenWhisk controller auth token."
+        exit 1
+    }
+    log_info "Updated OpenWhisk controller auth token in secret 'owadmin'."
+}
+
+# Modified deploy_openwhisk function
 deploy_openwhisk() {
     local cluster_ip="$1"
     log_info "Deploying OpenWhisk via Helm..."
-    pushd "$INSTALL_DIR/openwhisk-deploy-kube" > /dev/null
-    helm install owdev ./helm/openwhisk -n openwhisk -f mycluster.yaml > "$INSTALL_DIR/ow_install.log" 2>&1 \
-        || { log_info "Helm install failed. Check $INSTALL_DIR/ow_install.log"; exit 1; }
-    popd > /dev/null
+    pushd "$INSTALL_DIR/openwhisk-deploy-kube" >/dev/null
+    helm install owdev ./helm/openwhisk -n openwhisk -f mycluster.yaml >"$INSTALL_DIR/ow_install.log" 2>&1 ||
+        { 
+            log_info "Helm install failed. Check $INSTALL_DIR/ow_install.log"
+            exit 1
+        }
+    popd >/dev/null
     log_info "Helm install initiated. Monitoring deployment..."
 
     while true; do
@@ -211,16 +258,26 @@ deploy_openwhisk() {
     done
     log_info "OpenWhisk deployment complete!"
 
+    # Generate a new admin auth token
+    local NEW_AUTH
+    NEW_AUTH=$(generate_auth_token)
+    log_info "Generated new auth token: $NEW_AUTH"
+
+    # Update the controller's secret with the new token.
+    update_controller_auth "$NEW_AUTH"
+
+    # Update each user's .wskprops file with the new token.
     for user_dir in /users/*; do
         local CURRENT_USER
         CURRENT_USER=$(basename "$user_dir")
         cat <<EOF | sudo tee "/users/$CURRENT_USER/.wskprops"
 APIHOST=${cluster_ip}:31001
-AUTH=23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP
+AUTH=${NEW_AUTH}
 EOF
         sudo chown "$CURRENT_USER:$PROFILE_GROUP" "/users/$CURRENT_USER/.wskprops"
     done
 }
+
 
 # Main script execution
 log_info "Script arguments: $*"
