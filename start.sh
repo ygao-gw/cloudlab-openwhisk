@@ -108,7 +108,7 @@ apply_calico() {
             log_info "Failed to add Calico Helm repo. See $INSTALL_DIR/calico_install.log"
             exit 1
         }
-    vhelm install calico projectcalico/tigera-operator --version v3.29.2 >>"$INSTALL_DIR/calico_install.log" 2>&1 ||
+    helm install calico projectcalico/tigera-operator --version v3.29.2 >>"$INSTALL_DIR/calico_install.log" 2>&1 ||
         {
             log_info "Failed to install Calico. See $INSTALL_DIR/calico_install.log"
             exit 1
