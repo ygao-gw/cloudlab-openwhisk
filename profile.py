@@ -16,7 +16,7 @@ import geni.rspec.pg as rspec
 
 BASE_IP = "10.10.1"
 BANDWIDTH = 10000000
-IMAGE = 'urn:publicid:IDN+utah.cloudlab.us+image+cu-bison-lab-PG0:openwhiskv3:4'
+IMAGE = 'urn:publicid:IDN+clemson.cloudlab.us+image+gwcloudlab-PG0:openwsk:0'
 
 # Set up parameters
 pc = portal.Context()
