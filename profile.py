@@ -27,7 +27,7 @@ pc.defineParameter("nodeCount",
 pc.defineParameter("nodeType", 
                    "Node Hardware Type",
                    portal.ParameterType.NODETYPE, 
-                   "m510",
+                   "Any",
                    longDescription="A specific hardware type to use for all nodes. This profile has primarily been tested with m510 and xl170 nodes.")
 pc.defineParameter("startKubernetes",
                    "Create Kubernetes cluster",
